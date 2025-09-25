@@ -96,6 +96,10 @@ Thumbs.db
 # Transcript outputs
 *_transcript.txt
 *_transcript.json
+*_transcription.txt
+*_transcription.json
+gladia_transcript_*.txt
+gladia_transcript_*.json
 
 # Temporary files
 *.tmp
