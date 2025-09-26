@@ -124,6 +124,41 @@ func (s3s *S3Service) DownloadFile(key string) (string, error) {
 	return localPath, nil
 }
 
+// DownloadFileStream downloads a file from S3 directly to memory
+func (s3s *S3Service) DownloadFileStream(key string) (*bytes.Buffer, string, error) {
+	// Get object from S3
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(s3s.client.InputBucket),
+		Key:    aws.String(key),
+	}
+
+	result, err := s3s.client.S3Service.GetObject(input)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get object from S3: %v", err)
+	}
+	defer result.Body.Close()
+
+	// Create buffer and read data
+	buffer := &bytes.Buffer{}
+	_, err = buffer.ReadFrom(result.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read object data: %v", err)
+	}
+
+	// Determine content type based on file extension
+	contentType := "video/mp4" // Default for MP4 files
+	if strings.HasSuffix(strings.ToLower(key), ".mp4") {
+		contentType = "video/mp4"
+	} else if strings.HasSuffix(strings.ToLower(key), ".wav") {
+		contentType = "audio/wav"
+	} else if strings.HasSuffix(strings.ToLower(key), ".mp3") {
+		contentType = "audio/mpeg"
+	}
+
+	log.Printf("Downloaded to memory: %s (%.2fMB)", key, float64(buffer.Len())/(1024*1024))
+	return buffer, contentType, nil
+}
+
 // UploadJSON uploads a JSON result to the output S3 bucket
 func (s3s *S3Service) UploadJSON(key string, jsonData []byte) error {
 	input := &s3manager.UploadInput{

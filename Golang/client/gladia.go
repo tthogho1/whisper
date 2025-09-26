@@ -147,6 +147,91 @@ func (gs *GladiaService) UploadFile(filePath string) (string, error) {
 	return uploadResp.AudioURL, nil
 }
 
+// UploadFileStream uploads file data from memory buffer to Gladia
+func (gs *GladiaService) UploadFileStream(buffer *bytes.Buffer, filename, contentType string) (string, error) {
+	fileSizeMB := float64(buffer.Len()) / (1024 * 1024)
+	log.Printf("Uploading file from memory: %s (%.2fMB)", filename, fileSizeMB)
+
+	// Check file size limit (50MB)
+	// if fileSizeMB > 50 {
+	// 	return "", fmt.Errorf("file size too large: %.2fMB (maximum 50MB)", fileSizeMB)
+	// }
+
+	// Create multipart form
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Add file to form
+	part, err := writer.CreateFormFile("audio", filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to create form file: %v", err)
+	}
+
+	// Copy buffer content to form
+	if _, err := io.Copy(part, buffer); err != nil {
+		return "", fmt.Errorf("failed to copy buffer data: %v", err)
+	}
+
+	// Close the writer to finalize the form
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("failed to finalize form: %v", err)
+	}
+
+	// Create request
+	url := gs.client.BaseURL + "/upload"
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Set headers
+	req.Header.Set("x-gladia-key", gs.client.APIKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	// Debug log
+	log.Printf("Stream upload request: %s", url)
+
+	// Send request
+	resp, err := gs.client.Client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("stream upload request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %v", err)
+	}
+
+	// Check status code
+	if resp.StatusCode != 200 {
+		log.Printf("Error response: %s", string(body))
+		
+		switch resp.StatusCode {
+		case 400:
+			return "", fmt.Errorf("400 Bad Request: Invalid request. Please check API key or file format")
+		case 401:
+			return "", fmt.Errorf("401 Unauthorized: Invalid or expired API key")
+		case 413:
+			return "", fmt.Errorf("413 Payload Too Large: File size too large")
+		case 415:
+			return "", fmt.Errorf("415 Unsupported Media Type: Unsupported file format")
+		default:
+			return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		}
+	}
+
+	// Parse response
+	var uploadResp models.UploadResponse
+	if err := json.Unmarshal(body, &uploadResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	log.Printf("Stream upload completed: %s", uploadResp.AudioURL)
+	return uploadResp.AudioURL, nil
+}
+
 // StartTranscription starts the transcription process
 func (gs *GladiaService) StartTranscription(audioURL, language string, detectLanguage, enableSubtitles bool) (string, error) {
 	// Prepare request payload
@@ -154,12 +239,23 @@ func (gs *GladiaService) StartTranscription(audioURL, language string, detectLan
 		"formats": []string{"srt", "vtt"},
 	}
 
-	reqData := models.TranscriptionRequest{
-		AudioURL:        audioURL,
-		Language:        language,
-		DetectLanguage:  detectLanguage,
-		Subtitles:       enableSubtitles,
-		SubtitlesConfig: subtitlesConfig,
+	// Create base request data
+	reqData := map[string]interface{}{
+		"audio_url":        audioURL,
+		"detect_language":  detectLanguage,
+		"subtitles":        enableSubtitles,
+		"subtitles_config": subtitlesConfig,
+	}
+
+	// Only add language if it's not empty and detect_language is false
+	if language != "" && !detectLanguage {
+		reqData["language"] = language
+	} else if detectLanguage {
+		// For auto-detection, don't include language field
+		log.Printf("Using automatic language detection")
+	} else {
+		// Default to Japanese if no language specified and auto-detect is off
+		reqData["language"] = "ja"
 	}
 
 	jsonData, err := json.Marshal(reqData)
@@ -194,7 +290,7 @@ func (gs *GladiaService) StartTranscription(audioURL, language string, detectLan
 	}
 
 	// Check status code
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		return "", fmt.Errorf("failed to start transcription: HTTP %d - %s", resp.StatusCode, string(body))
 	}
 
